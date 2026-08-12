@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""Serve fandom-isearch over localhost (required by SQLite WebAssembly)."""
+
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+import argparse
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="fandom-isearch のローカルサーバー")
+    parser.add_argument("port", nargs="?", type=int, default=8000)
+    args = parser.parse_args()
+    web = Path(__file__).resolve().parent / "web"
+    handler = partial(SimpleHTTPRequestHandler, directory=web)
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)
+    print(f"fandom-isearch: http://127.0.0.1:{args.port}/")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n終了します")
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

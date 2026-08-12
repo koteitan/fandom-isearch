@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+"""Build a browser-searchable SQLite database from a MediaWiki XML dump."""
+
+from __future__ import annotations
+
+import argparse
+import bz2
+from collections import Counter
+from datetime import datetime, timezone
+import gzip
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import sys
+import tempfile
+from typing import BinaryIO
+from urllib.parse import urlsplit, urlunsplit
+from xml.etree.ElementTree import ParseError, iterparse
+
+
+ROOT = Path(__file__).resolve().parent
+DB_DIR = ROOT / "web" / "db"
+SCHEMA_VERSION = 1
+
+
+def app_version() -> str:
+    try:
+        return str(json.loads((ROOT / "web" / "version.json").read_text())["version"])
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return "unknown"
+
+
+def local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def child(element, name: str):
+    return next((item for item in element if local_name(item.tag) == name), None)
+
+
+def text(element) -> str:
+    return "" if element is None or element.text is None else element.text
+
+
+def archive_name(path: Path) -> str:
+    name = path.name
+    for suffix in (".bz2", ".gz"):
+        if name.lower().endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    if name.lower().endswith(".xml"):
+        name = name[:-4]
+    elif "." in name:
+        name = name.rsplit(".", 1)[0]
+    name = re.sub(r"[^\w.-]+", "_", name, flags=re.UNICODE).strip("._")
+    if not name:
+        raise ValueError("アーカイブ名からDBファイル名を作れません")
+    return name
+
+
+def open_dump(path: Path) -> BinaryIO:
+    lower = path.name.lower()
+    if lower.endswith(".gz"):
+        return gzip.open(path, "rb")
+    if lower.endswith(".bz2"):
+        return bz2.open(path, "rb")
+    return path.open("rb")
+
+
+def parse_timestamp(value: str) -> int:
+    if not value:
+        return 0
+    try:
+        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return 0
+
+
+def wiki_base_url(base: str) -> str:
+    """Turn siteinfo/base (the main-page URL) into the wiki article prefix."""
+    if not base:
+        return ""
+    parts = urlsplit(base)
+    path = parts.path
+    marker = "/wiki/"
+    if marker in path:
+        path = path.split(marker, 1)[0] + marker
+    elif not path.endswith("/"):
+        path += "/"
+    scheme = "https" if parts.scheme in ("http", "https") else parts.scheme
+    return urlunsplit((scheme, parts.netloc, path, "", ""))
+
+
+def check_fts5() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute(
+            "CREATE VIRTUAL TABLE fts_check USING fts5("
+            "value, tokenize='trigram', detail='column')"
+        )
+    except sqlite3.Error as error:
+        raise RuntimeError(
+            "この Python の SQLite では FTS5 trigram が使えません "
+            f"(SQLite {sqlite3.sqlite_version}): {error}"
+        ) from error
+    finally:
+        connection.close()
+
+
+def pages_from_dump(stream: BinaryIO):
+    namespaces: dict[int, str] = {}
+    site: dict[str, str] = {}
+    in_siteinfo = False
+
+    for event, element in iterparse(stream, events=("start", "end")):
+        name = local_name(element.tag)
+        if event == "start":
+            if name == "siteinfo":
+                in_siteinfo = True
+            continue
+
+        if in_siteinfo and name == "namespace":
+            namespaces[int(element.attrib["key"])] = text(element)
+        elif in_siteinfo and name in ("sitename", "dbname", "base", "generator"):
+            site[name] = text(element)
+        elif name == "siteinfo":
+            in_siteinfo = False
+            element.clear()
+        elif name == "page":
+            revision = child(element, "revision")
+            if revision is not None:
+                contributor = child(revision, "contributor")
+                author = ""
+                if contributor is not None:
+                    author = text(child(contributor, "username")) or text(
+                        child(contributor, "ip")
+                    )
+                yield (
+                    int(text(child(element, "id"))),
+                    int(text(child(element, "ns"))),
+                    text(child(element, "title")),
+                    text(child(revision, "text")),
+                    author,
+                    int(text(child(revision, "id")) or 0),
+                    parse_timestamp(text(child(revision, "timestamp"))),
+                ), namespaces, site
+            element.clear()
+
+
+def create_database(source: Path, destination: Path) -> dict[str, object]:
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    os.close(fd)
+    temporary = Path(temporary_name)
+    connection = None
+    counts: Counter[int] = Counter()
+    namespaces: dict[int, str] = {}
+    site: dict[str, str] = {}
+    page_count = 0
+
+    try:
+        connection = sqlite3.connect(temporary)
+        connection.executescript(
+            """
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            PRAGMA temp_store=MEMORY;
+            PRAGMA locking_mode=EXCLUSIVE;
+            PRAGMA page_size=4096;
+
+            CREATE TABLE metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            ) WITHOUT ROWID;
+
+            CREATE TABLE namespaces (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                page_count INTEGER NOT NULL
+            );
+
+            CREATE TABLE pages (
+                id INTEGER PRIMARY KEY,
+                namespace INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                author TEXT NOT NULL,
+                revision_id INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            """
+        )
+
+        batch = []
+        with open_dump(source) as stream:
+            for record, current_namespaces, current_site in pages_from_dump(stream):
+                batch.append(record)
+                counts[record[1]] += 1
+                page_count += 1
+                namespaces = current_namespaces
+                site = current_site
+                if len(batch) >= 500:
+                    connection.executemany(
+                        "INSERT INTO pages VALUES (?, ?, ?, ?, ?, ?, ?)", batch
+                    )
+                    batch.clear()
+                    if page_count % 5000 == 0:
+                        print(f"  {page_count:,} ページを読み込みました…", flush=True)
+        if batch:
+            connection.executemany(
+                "INSERT INTO pages VALUES (?, ?, ?, ?, ?, ?, ?)", batch
+            )
+
+        if page_count == 0:
+            raise RuntimeError("XML にページが見つかりません")
+
+        connection.executemany(
+            "INSERT INTO namespaces(id, name, page_count) VALUES (?, ?, ?)",
+            [
+                (namespace_id, namespaces.get(namespace_id, ""), count)
+                for namespace_id, count in sorted(counts.items())
+            ],
+        )
+        generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        metadata = {
+            "archive_name": destination.stem,
+            "site_name": site.get("sitename", destination.stem),
+            "wiki_dbname": site.get("dbname", ""),
+            "wiki_base_url": wiki_base_url(site.get("base", "")),
+            "mediawiki_generator": site.get("generator", ""),
+            "generated_at": generated_at,
+            "page_count": str(page_count),
+        }
+        connection.executemany(
+            "INSERT INTO metadata(key, value) VALUES (?, ?)", metadata.items()
+        )
+
+        print("  検索インデックスを作成しています…", flush=True)
+        connection.executescript(
+            """
+            CREATE INDEX pages_updated_at_idx
+                ON pages(updated_at DESC, id DESC);
+            CREATE INDEX pages_namespace_updated_at_idx
+                ON pages(namespace, updated_at DESC, id DESC);
+
+            CREATE VIRTUAL TABLE page_search USING fts5(
+                title,
+                body,
+                author,
+                content='pages',
+                content_rowid='id',
+                tokenize='trigram',
+                detail='column'
+            );
+            INSERT INTO page_search(page_search) VALUES('rebuild');
+            INSERT INTO page_search(page_search) VALUES('optimize');
+            """
+        )
+        connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        connection.commit()
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise RuntimeError(f"SQLite integrity_check に失敗しました: {integrity}")
+        connection.close()
+        connection = None
+        os.replace(temporary, destination)
+        return {
+            "file": destination.name,
+            "name": destination.stem,
+            "siteName": metadata["site_name"],
+            "pages": page_count,
+            "generatedAt": generated_at,
+        }
+    except Exception:
+        if connection is not None:
+            connection.close()
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def update_manifest(entry: dict[str, object]) -> None:
+    path = DB_DIR / "databases.json"
+    entries: list[dict[str, object]] = []
+    if path.exists():
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+            entries = list(document.get("databases", []))
+        except (json.JSONDecodeError, OSError, TypeError):
+            entries = []
+    entries = [item for item in entries if item.get("file") != entry["file"]]
+    entries.append(entry)
+    entries.sort(key=lambda item: str(item.get("name", "")).casefold())
+    document = {"schemaVersion": SCHEMA_VERSION, "databases": entries}
+
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=".databases.json.", suffix=".tmp", dir=DB_DIR
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(document, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+        os.replace(temporary_name, path)
+    except Exception:
+        Path(temporary_name).unlink(missing_ok=True)
+        raise
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="MediaWiki XML アーカイブから fandom-isearch 用DBを作成します"
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {app_version()}")
+    parser.add_argument("archive", type=Path, help="MediaWiki XML (.xml/.gz/.bz2)")
+    args = parser.parse_args()
+    source = args.archive.expanduser().resolve()
+    if not source.is_file():
+        parser.error(f"ファイルがありません: {source}")
+
+    try:
+        check_fts5()
+        DB_DIR.mkdir(parents=True, exist_ok=True)
+        destination = DB_DIR / f"{archive_name(source)}.db"
+        print(f"{source} → {destination}", flush=True)
+        entry = create_database(source, destination)
+        update_manifest(entry)
+    except (OSError, ValueError, RuntimeError, ParseError, sqlite3.Error) as error:
+        print(f"makedb: {error}", file=sys.stderr)
+        return 1
+
+    size_mb = destination.stat().st_size / (1024 * 1024)
+    print(f"完了: {entry['pages']:,} ページ / {size_mb:.1f} MiB")
+    print("閲覧: ./serve を実行して http://127.0.0.1:8000/ を開いてください")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

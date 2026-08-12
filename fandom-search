@@ -1,0 +1,636 @@
+#!/usr/bin/env python3
+"""Terminal incremental search for fandom-isearch SQLite databases.
+
+Interactive (TTY):   ./fandom-search
+One-shot / pipe:     ./fandom-search "keyword"
+Lists:               ./fandom-search --name-space
+                     ./fandom-search --search-target
+"""
+
+from __future__ import annotations
+
+import argparse
+import curses
+import json
+import locale
+import os
+from pathlib import Path
+import re
+import signal
+import sqlite3
+import sys
+import time
+import unicodedata
+from urllib.parse import quote
+
+
+SCRIPT_DIR = Path(os.path.dirname(os.path.realpath(__file__)))
+DB_DIR = SCRIPT_DIR / "web" / "db"
+MANIFEST = DB_DIR / "databases.json"
+LIST_SENTINEL = "\0LIST"
+TARGETS = {
+    "title": "ページタイトル",
+    "body": "本文",
+    "author": "編集者",
+}
+TARGET_ALIASES = {
+    "title": "title",
+    "page-title": "title",
+    "ページタイトル": "title",
+    "タイトル": "title",
+    "body": "body",
+    "text": "body",
+    "本文": "body",
+    "author": "author",
+    "editor": "author",
+    "編集者": "author",
+    "著者": "author",
+}
+
+
+def app_version() -> str:
+    try:
+        return str(json.loads((SCRIPT_DIR / "web" / "version.json").read_text())["version"])
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return "unknown"
+
+
+APP_VERSION = app_version()
+
+
+class CliError(Exception):
+    pass
+
+
+def default_db_path() -> Path:
+    if MANIFEST.is_file():
+        try:
+            document = json.loads(MANIFEST.read_text(encoding="utf-8"))
+            for entry in document.get("databases", []):
+                filename = entry.get("file", "")
+                if isinstance(filename, str) and Path(filename).name == filename:
+                    candidate = DB_DIR / filename
+                    if candidate.is_file():
+                        return candidate
+        except (OSError, TypeError, json.JSONDecodeError):
+            pass
+    databases = sorted(DB_DIR.glob("*.db"))
+    return databases[0] if databases else DB_DIR / "<archive-name>.db"
+
+
+def open_db(path: Path) -> sqlite3.Connection:
+    path = path.expanduser().resolve()
+    if not path.is_file():
+        raise CliError(f"{path} がありません。先に ./makedb <archive>.xml を実行してください")
+    try:
+        db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
+        db.text_factory = str
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        if version != 1:
+            db.close()
+            raise CliError(f"未対応のDB形式です: {path} (version {version})")
+        db.execute("SELECT 1 FROM pages LIMIT 1").fetchone()
+        return db
+    except sqlite3.Error as error:
+        raise CliError(f"DBを開けません: {path}: {error}") from error
+
+
+def metadata(db: sqlite3.Connection) -> dict[str, str]:
+    return {row["key"]: row["value"] for row in db.execute("SELECT key, value FROM metadata")}
+
+
+def namespace_rows(db: sqlite3.Connection) -> list[sqlite3.Row]:
+    return list(db.execute("SELECT id, name, page_count FROM namespaces ORDER BY id"))
+
+
+def namespace_label(namespace_id: int, name: str) -> str:
+    if namespace_id == 0:
+        return "標準（記事）"
+    return name or f"名前空間 {namespace_id}"
+
+
+def print_targets() -> None:
+    print("TARGET\tDESCRIPTION")
+    for target, description in TARGETS.items():
+        print(f"{target}\t{description}")
+
+
+def print_namespaces(rows: list[sqlite3.Row]) -> None:
+    print("ID\tNAME\tPAGES")
+    for row in rows:
+        print(
+            f"{row['id']}\t{namespace_label(row['id'], row['name'])}"
+            f"\t{row['page_count']}"
+        )
+
+
+def split_options(values: list[str]) -> list[str]:
+    result = []
+    for value in values:
+        result.extend(part.strip() for part in value.split(",") if part.strip())
+    return result
+
+
+def resolve_targets(values: list[str] | None) -> list[str]:
+    if not values:
+        return list(TARGETS)
+    targets = []
+    for value in split_options(values):
+        target = TARGET_ALIASES.get(value.casefold())
+        if target is None:
+            raise CliError(
+                f"検索対象が不明です: {value!r} "
+                "(--search-target を引数なしで実行すると一覧を表示します)"
+            )
+        if target not in targets:
+            targets.append(target)
+    if not targets:
+        raise CliError("検索対象を1つ以上指定してください")
+    return targets
+
+
+def resolve_namespaces(
+    values: list[str] | None, rows: list[sqlite3.Row]
+) -> list[int] | None:
+    if not values:
+        return None
+
+    aliases: dict[str, int] = {}
+    for row in rows:
+        namespace_id = int(row["id"])
+        name = str(row["name"])
+        aliases[str(namespace_id)] = namespace_id
+        aliases[namespace_label(namespace_id, name).casefold()] = namespace_id
+        if name:
+            aliases[name.casefold()] = namespace_id
+    aliases.update(
+        {
+            "標準": 0,
+            "記事": 0,
+            "main": 0,
+            "article": 0,
+        }
+    )
+
+    selected = []
+    for value in split_options(values):
+        namespace_id = aliases.get(value.casefold())
+        if namespace_id is None:
+            raise CliError(
+                f"名前空間が不明です: {value!r} "
+                "(--name-space を引数なしで実行すると一覧を表示します)"
+            )
+        if namespace_id not in selected:
+            selected.append(namespace_id)
+    if not selected:
+        raise CliError("名前空間を1つ以上指定してください")
+    return selected
+
+
+def parse_search(value: str) -> tuple[list[list[str]], list[str]]:
+    tokens: list[tuple[str, str | None]] = []
+    index = 0
+    while index < len(value):
+        while index < len(value) and value[index].isspace():
+            index += 1
+        if index >= len(value):
+            break
+
+        if value[index] == '"':
+            index += 1
+            phrase = []
+            while index < len(value):
+                if value[index] == '"':
+                    index += 1
+                    break
+                if (
+                    value[index] == "\\"
+                    and index + 1 < len(value)
+                    and value[index + 1] in ('"', "\\")
+                ):
+                    phrase.append(value[index + 1])
+                    index += 2
+                else:
+                    phrase.append(value[index])
+                    index += 1
+            phrase_value = "".join(phrase)
+            if phrase_value:
+                tokens.append(("term", phrase_value))
+            continue
+
+        start = index
+        while index < len(value) and not value[index].isspace():
+            index += 1
+        word = value[start:index]
+        if word == "OR":
+            tokens.append(("or", None))
+        elif word == "AND":
+            tokens.append(("and", None))
+        elif word:
+            tokens.append(("term", word))
+
+    groups: list[list[str]] = [[]]
+    for token_index, (kind, token_value) in enumerate(tokens):
+        if kind == "term" and token_value is not None:
+            groups[-1].append(token_value)
+        elif kind == "or":
+            has_term_after = any(item[0] == "term" for item in tokens[token_index + 1 :])
+            if groups[-1] and has_term_after:
+                groups.append([])
+
+    groups = [group for group in groups if group]
+    if not groups and value.strip():
+        groups = [[value.strip()]]
+    terms = list(dict.fromkeys(term for group in groups for term in group))
+    return groups, terms
+
+
+def escape_like(value: str) -> str:
+    return "%" + value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def fts_term(value: str, targets: list[str]) -> str:
+    grams = []
+    for index in range(len(value) - 2):
+        gram = value[index : index + 3]
+        if gram not in grams:
+            grams.append(gram)
+    columns = targets[0] if len(targets) == 1 else "{" + " ".join(targets) + "}"
+    terms = ['"' + gram.replace('"', '""') + '"' for gram in grams]
+    return f"{columns} : ({' AND '.join(terms)})"
+
+
+def fts_query(groups: list[list[str]], targets: list[str]) -> str:
+    clauses = []
+    for group in groups:
+        indexed = [term for term in group if len(term) >= 3]
+        clauses.append("(" + " AND ".join(fts_term(term, targets) for term in indexed) + ")")
+    return " OR ".join(clauses)
+
+
+def exact_query(
+    groups: list[list[str]], targets: list[str], parameters: list[object]
+) -> str:
+    group_clauses = []
+    for group in groups:
+        term_clauses = []
+        for term in group:
+            parameters.extend(escape_like(term) for _ in targets)
+            fields = " OR ".join(f"p.{target} LIKE ? ESCAPE '\\'" for target in targets)
+            term_clauses.append(f"({fields})")
+        group_clauses.append("(" + " AND ".join(term_clauses) + ")")
+    return "(" + " OR ".join(group_clauses) + ")"
+
+
+def search(
+    db: sqlite3.Connection,
+    query: str,
+    targets: list[str],
+    namespace_ids: list[int] | None,
+    limit: int,
+) -> tuple[list[sqlite3.Row], list[str]]:
+    query = query.strip()
+    groups, terms = parse_search(query)
+    parameters: list[object] = []
+
+    if not query:
+        sql = """SELECT p.id, p.namespace, p.title, p.body, p.author, p.updated_at
+                 FROM pages AS p WHERE 1=1"""
+    else:
+        exact_parameters: list[object] = []
+        exact = exact_query(groups, targets, exact_parameters)
+        can_use_index = all(any(len(term) >= 3 for term in group) for group in groups)
+        if can_use_index:
+            parameters.append(fts_query(groups, targets))
+            parameters.extend(exact_parameters)
+            sql = """SELECT p.id, p.namespace, p.title, p.body, p.author, p.updated_at
+                     FROM page_search JOIN pages AS p ON p.id=page_search.rowid
+                     WHERE page_search MATCH ? AND """ + exact
+        else:
+            parameters.extend(exact_parameters)
+            sql = """SELECT p.id, p.namespace, p.title, p.body, p.author, p.updated_at
+                     FROM pages AS p WHERE """ + exact
+
+    if namespace_ids is not None:
+        sql += " AND p.namespace IN (" + ",".join("?" for _ in namespace_ids) + ")"
+        parameters.extend(namespace_ids)
+    sql += " ORDER BY p.updated_at DESC, p.id DESC LIMIT ?"
+    parameters.append(limit)
+    return list(db.execute(sql, parameters)), terms
+
+
+def compact(value: str) -> str:
+    return " ".join(str(value).split())
+
+
+def excerpt(body: str, terms: list[str], length: int = 320) -> str:
+    value = compact(body)
+    if not value:
+        return "（本文なし）"
+    start = 0
+    lower = value.lower()
+    positions = [lower.find(term.lower()) for term in terms]
+    positions = [position for position in positions if position >= 0]
+    if positions:
+        start = max(0, min(positions) - 80)
+    end = min(len(value), start + length)
+    return ("…" if start else "") + value[start:end] + ("…" if end < len(value) else "")
+
+
+def article_url(base_url: str, title: str) -> str:
+    if not base_url:
+        return ""
+    encoded = quote(title.replace(" ", "_"), safe="/")
+    return base_url + encoded
+
+
+def format_result(
+    row: sqlite3.Row,
+    namespace_names: dict[int, str],
+    terms: list[str],
+) -> str:
+    date = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["updated_at"]))
+    namespace = namespace_names.get(row["namespace"], str(row["namespace"]))
+    author = compact(row["author"]) or "不明"
+    return (
+        f"{date} [{namespace}] {compact(row['title'])} — {author} — "
+        f"{excerpt(row['body'], terms)}"
+    )
+
+
+def oneshot(
+    db: sqlite3.Connection,
+    query: str,
+    targets: list[str],
+    namespace_ids: list[int] | None,
+    limit: int,
+    with_url: bool,
+    namespace_names: dict[int, str],
+    base_url: str,
+) -> None:
+    rows, terms = search(db, query, targets, namespace_ids, limit)
+    for row in rows:
+        line = format_result(row, namespace_names, terms)
+        if with_url:
+            url = article_url(base_url, row["title"])
+            if url:
+                line += f"  {url}"
+        print(line)
+
+
+def display_width(character: str) -> int:
+    if unicodedata.combining(character):
+        return 0
+    return 2 if unicodedata.east_asian_width(character) in ("W", "F") else 1
+
+
+def highlight_segments(text: str, terms: list[str], base: int, match: int):
+    patterns = sorted({term for term in terms if term}, key=len, reverse=True)
+    if not patterns:
+        return [(text, base)]
+    expression = re.compile("|".join(re.escape(term) for term in patterns), re.IGNORECASE)
+    segments = []
+    position = 0
+    for found in expression.finditer(text):
+        if found.start() > position:
+            segments.append((text[position : found.start()], base))
+        segments.append((found.group(0), match | base))
+        position = found.end()
+    if position < len(text):
+        segments.append((text[position:], base))
+    return segments
+
+
+def draw_segments(screen, y: int, x: int, budget: int, segments) -> None:
+    column = x
+    limit_column = x + budget
+    for text, attribute in segments:
+        for character in text:
+            width = display_width(character)
+            if column + width > limit_column:
+                return
+            try:
+                screen.addstr(y, column, character, attribute)
+            except curses.error:
+                return
+            column += width
+
+
+def tui(
+    db: sqlite3.Connection,
+    targets: list[str],
+    namespace_ids: list[int] | None,
+    limit: int,
+    namespace_names: dict[int, str],
+    base_url: str,
+) -> None:
+    locale.setlocale(locale.LC_ALL, "")
+    picked = {"title": None}
+
+    def run(screen) -> None:
+        try:
+            curses.curs_set(1)
+        except curses.error:
+            pass
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+            has_color = curses.has_colors()
+        except curses.error:
+            has_color = False
+        match_style = (
+            curses.color_pair(1) | curses.A_BOLD
+            if has_color
+            else curses.A_REVERSE | curses.A_BOLD
+        )
+        selected_style = curses.A_REVERSE if has_color else curses.A_BOLD
+
+        query = ""
+        selected = 0
+        top = 0
+        while True:
+            rows, terms = search(db, query, targets, namespace_ids, limit)
+            selected = max(0, min(selected, len(rows) - 1))
+            height, width = screen.getmaxyx()
+            screen.erase()
+            namespace_summary = "all" if namespace_ids is None else ",".join(
+                namespace_names.get(item, str(item)) for item in namespace_ids
+            )
+            heading = (
+                f"fandom-search  {len(rows)} hits  "
+                f"[target:{','.join(targets)} ns:{namespace_summary}]  "
+                "[Up/Down move  Enter URL  Esc quit]"
+            )
+            try:
+                screen.addnstr(0, 0, heading, width - 1, curses.A_BOLD)
+                screen.addnstr(1, 0, "> " + query, width - 1)
+            except curses.error:
+                pass
+
+            list_height = max(1, height - 3)
+            if selected < top:
+                top = selected
+            if selected >= top + list_height:
+                top = selected - list_height + 1
+            for row_index in range(top, min(len(rows), top + list_height)):
+                row = rows[row_index]
+                base = selected_style if row_index == selected else curses.A_NORMAL
+                indicator = "▶ " if row_index == selected else "  "
+                line = indicator + format_result(row, namespace_names, terms)
+                segments = highlight_segments(line, terms, base, match_style)
+                draw_segments(screen, 3 + row_index - top, 0, width - 1, segments)
+            try:
+                cursor_column = min(width - 1, 2 + sum(display_width(ch) for ch in query))
+                screen.move(1, cursor_column)
+            except curses.error:
+                pass
+            screen.refresh()
+
+            try:
+                character = screen.get_wch()
+            except KeyboardInterrupt:
+                return
+            except curses.error:
+                continue
+            if isinstance(character, str):
+                if character in ("\n", "\r"):
+                    if rows:
+                        picked["title"] = rows[selected]["title"]
+                    return
+                if character in ("\x7f", "\b", "\x08"):
+                    query = query[:-1]
+                    selected = 0
+                elif character in ("\x1b", "\x03"):
+                    return
+                elif character.isprintable():
+                    query += character
+                    selected = 0
+            else:
+                if character == curses.KEY_BACKSPACE:
+                    query = query[:-1]
+                    selected = 0
+                elif character == curses.KEY_UP:
+                    selected -= 1
+                elif character == curses.KEY_DOWN:
+                    selected += 1
+                elif character == curses.KEY_PPAGE:
+                    selected -= height - 3
+                elif character == curses.KEY_NPAGE:
+                    selected += height - 3
+                elif character == curses.KEY_HOME:
+                    selected = 0
+
+    try:
+        curses.wrapper(run)
+    except KeyboardInterrupt:
+        pass
+    if picked["title"]:
+        print(article_url(base_url, picked["title"]) or picked["title"])
+
+
+def positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("整数を指定してください") from error
+    if number <= 0:
+        raise argparse.ArgumentTypeError("1以上を指定してください")
+    return number
+
+
+def build_parser(default_db: Path) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="fandom-isearch - terminal search")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {APP_VERSION}")
+    parser.add_argument(
+        "query", nargs="*", help="検索語（省略かつTTYならインクリメンタル検索）"
+    )
+    parser.add_argument(
+        "--db", type=Path, default=default_db, help=f"SQLite DB (default: {default_db})"
+    )
+    parser.add_argument(
+        "--name-space",
+        "--namespace",
+        dest="name_spaces",
+        action="append",
+        nargs="?",
+        const=LIST_SENTINEL,
+        metavar="NAME",
+        help="名前空間で絞り込み（複数回可、引数なしで一覧）",
+    )
+    parser.add_argument(
+        "--target",
+        "--search-target",
+        dest="targets",
+        action="append",
+        nargs="?",
+        const=LIST_SENTINEL,
+        metavar="TARGET",
+        help="検索対象を指定（複数回可、引数なしで一覧）",
+    )
+    parser.add_argument("--limit", type=positive_int, default=500, help="最大件数 (default: 500)")
+    parser.add_argument("--url", action="store_true", help="記事URLを末尾に追加（ワンショット）")
+    return parser
+
+
+def main() -> int:
+    parser = build_parser(default_db_path())
+    args = parser.parse_args()
+    list_targets = bool(args.targets and LIST_SENTINEL in args.targets)
+    list_namespaces = bool(args.name_spaces and LIST_SENTINEL in args.name_spaces)
+
+    db = None
+    try:
+        if list_targets:
+            print_targets()
+        if list_namespaces:
+            if list_targets:
+                print()
+            db = open_db(args.db)
+            print_namespaces(namespace_rows(db))
+        if list_targets or list_namespaces:
+            return 0
+
+        db = open_db(args.db)
+        rows = namespace_rows(db)
+        targets = resolve_targets(args.targets)
+        namespace_ids = resolve_namespaces(args.name_spaces, rows)
+        namespace_names = {
+            int(row["id"]): namespace_label(int(row["id"]), str(row["name"]))
+            for row in rows
+        }
+        site = metadata(db)
+        query = " ".join(args.query).strip()
+        if query or not sys.stdout.isatty():
+            oneshot(
+                db,
+                query,
+                targets,
+                namespace_ids,
+                args.limit,
+                args.url,
+                namespace_names,
+                site.get("wiki_base_url", ""),
+            )
+        else:
+            tui(
+                db,
+                targets,
+                namespace_ids,
+                args.limit,
+                namespace_names,
+                site.get("wiki_base_url", ""),
+            )
+        return 0
+    except (CliError, sqlite3.Error) as error:
+        print(f"fandom-search: error: {error}", file=sys.stderr)
+        return 2
+    finally:
+        if db is not None:
+            db.close()
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    raise SystemExit(main())

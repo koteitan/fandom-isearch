@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fandom isearch</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%8E%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script>
+    (function () {
+      try {
+        var state = JSON.parse(localStorage.getItem('fandom-isearch:ui') || '{}');
+        if (state.dark !== false) document.documentElement.classList.add('dark');
+      } catch (_) {
+        document.documentElement.classList.add('dark');
+      }
+    })();
+  </script>
+</head>
+<body>
+  <header class="page-header">
+    <a class="brand" href="./" aria-label="fandom isearch ホーム">
+      <span class="brand-mark">⌕</span>
+      <h1>fandom isearch</h1>
+    </a>
+    <div class="menu-container" id="menuContainer">
+      <button type="button" class="menu-toggle" id="menuToggle"
+        aria-label="メニュー" aria-expanded="false" aria-controls="menuDropdown">☰</button>
+      <div class="menu-dropdown" id="menuDropdown">
+        <label class="checkbox-row">
+          <input id="darkMode" type="checkbox">
+          <span>ダークモード</span>
+        </label>
+      </div>
+    </div>
+  </header>
+
+  <div class="protocol-warning" id="protocolWarning" hidden>
+    SQLite WebAssembly は <code>file://</code> から読み込めません。
+    リポジトリで <code>./serve</code> を実行し、表示されたURLを開いてください。
+  </div>
+
+  <main>
+    <section class="search-panel" aria-label="検索">
+      <div class="database-row">
+        <label for="database">アーカイブ</label>
+        <select id="database" disabled>
+          <option>DB一覧を読み込み中…</option>
+        </select>
+      </div>
+
+      <input id="query" type="search" placeholder="検索…（部分一致・日本語OK）"
+        aria-label="検索語" aria-describedby="searchHelp"
+        autocomplete="off" spellcheck="false" autofocus disabled>
+      <p class="search-help" id="searchHelp">
+        空白はAND・<code>OR</code> はOR・<code>"abc def"</code> は空白を含むフレーズ
+      </p>
+
+      <fieldset class="target-fields">
+        <legend>検索対象</legend>
+        <label class="checkbox-row">
+          <input type="checkbox" name="field" value="title" checked>
+          <span>ページタイトル</span>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" name="field" value="body" checked>
+          <span>本文</span>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" name="field" value="author" checked>
+          <span>編集者</span>
+        </label>
+      </fieldset>
+
+      <details class="namespace-filter" id="namespaceDetails">
+        <summary>
+          <span>名前空間</span>
+          <span class="selection-summary" id="namespaceSummary">読み込み中…</span>
+        </summary>
+        <div class="namespace-actions">
+          <button type="button" id="selectAllNamespaces">すべて選択</button>
+          <button type="button" id="clearNamespaces">すべて解除</button>
+        </div>
+        <div class="namespace-grid" id="namespaceGrid"></div>
+      </details>
+    </section>
+
+    <div class="meta" id="meta" role="status" aria-live="polite">DBを読み込み中…</div>
+    <section class="results" id="results" aria-label="検索結果"></section>
+  </main>
+
+  <footer>
+    <a href="./">fandom isearch</a> <span id="appVersion"></span><br>
+    MediaWiki XML + SQLite FTS5
+  </footer>
+
+  <script>
+    if (location.protocol === 'file:') {
+      document.getElementById('protocolWarning').hidden = false;
+      document.getElementById('meta').textContent =
+        'ローカルHTTPサーバーが必要です。リポジトリで ./serve を実行してください';
+    }
+  </script>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
