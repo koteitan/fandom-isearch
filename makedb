@@ -27,6 +27,7 @@ from xml.etree.ElementTree import ParseError, iterparse
 ROOT = Path(__file__).resolve().parent
 DB_DIR = ROOT / "web" / "db"
 SCHEMA_VERSION = 1
+PUBLIC_FILE_MODE = 0o644
 LICENSE_PAGE_NAMES = {
     "copyright",
     "copyrights",
@@ -426,6 +427,7 @@ def create_database(source: Path, destination: Path) -> dict[str, object]:
             raise RuntimeError(f"SQLite integrity_check に失敗しました: {integrity}")
         connection.close()
         connection = None
+        os.chmod(temporary, PUBLIC_FILE_MODE)
         os.replace(temporary, destination)
         return {
             "file": destination.name,
@@ -462,6 +464,7 @@ def update_manifest(entry: dict[str, object]) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(document, stream, ensure_ascii=False, indent=2)
             stream.write("\n")
+        os.chmod(temporary_name, PUBLIC_FILE_MODE)
         os.replace(temporary_name, path)
     except Exception:
         Path(temporary_name).unlink(missing_ok=True)
