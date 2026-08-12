@@ -4,6 +4,8 @@
 
 fandom-isearchはFandom（MediaWiki）のXMLアーカイブをローカルのSQLite DBに変換し、ブラウザまたはターミナルでインクリメンタル検索するツールです。ページタイトル、本文、編集者を対象に、日本語を含む部分一致検索ができます。
 
+![fandom-isearchのブラウザ検索画面](img/fandom-isearch-screenshot.png)
+
 ## DBを作る
 
 Python 3でDBを作成します。

@@ -4,6 +4,8 @@
 
 fandom-isearch converts a Fandom (MediaWiki) XML archive into a local SQLite database and provides incremental search in a browser or terminal. It supports substring matching, including Japanese text, across page titles, body text, and editors.
 
+![fandom-isearch browser search interface](img/fandom-isearch-screenshot.png)
+
 ## Build a database
 
 Use Python 3 to build the database:
