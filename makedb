@@ -12,17 +12,40 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 from typing import BinaryIO
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
 
 ROOT = Path(__file__).resolve().parent
 DB_DIR = ROOT / "web" / "db"
 SCHEMA_VERSION = 1
+LICENSE_PAGE_NAMES = {
+    "copyright",
+    "copyrights",
+    "licence",
+    "license",
+    "licensing",
+    "ライセンス",
+    "著作権",
+}
+CREATIVE_COMMONS_URL = re.compile(
+    r"https?://creativecommons\.org/licenses/"
+    r"(?P<code>[a-z]+(?:-[a-z]+)*)/(?P<version>\d+(?:\.\d+)?)/",
+    re.IGNORECASE,
+)
+FANDOM_WIKI_ID = re.compile(r"^[a-z0-9][a-z0-9_-]*$", re.IGNORECASE)
+WIKI_REDIRECT = re.compile(
+    r"^\s*#redirect\s*\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]*)?\]\]",
+    re.IGNORECASE,
+)
 
 
 def app_version() -> str:
@@ -69,6 +92,99 @@ def open_dump(path: Path) -> BinaryIO:
     return path.open("rb")
 
 
+def fandom_dump_url(wiki_id: str) -> str:
+    filename = f"{wiki_id}_pages_current.xml.7z"
+    return (
+        "https://s3.amazonaws.com/wikia_xml_dumps/"
+        f"{wiki_id[0]}/{wiki_id[:2]}/{filename}"
+    )
+
+
+def download_dump(wiki_id: str, destination: Path) -> None:
+    url = fandom_dump_url(wiki_id)
+    print(f"Fandom Current pages をダウンロードします:\n  {url}", flush=True)
+    request = Request(url, headers={"User-Agent": f"fandom-isearch/{app_version()}"})
+    try:
+        with urlopen(request, timeout=60) as response, destination.open("wb") as output:
+            expected = int(response.headers.get("Content-Length", "0") or 0)
+            downloaded = 0
+            next_report = 10 * 1024 * 1024
+            while chunk := response.read(1024 * 1024):
+                output.write(chunk)
+                downloaded += len(chunk)
+                if downloaded >= next_report:
+                    if expected:
+                        print(
+                            f"  {downloaded / (1024 * 1024):.1f} / "
+                            f"{expected / (1024 * 1024):.1f} MiB",
+                            flush=True,
+                        )
+                    else:
+                        print(f"  {downloaded / (1024 * 1024):.1f} MiB", flush=True)
+                    next_report += 10 * 1024 * 1024
+    except HTTPError as error:
+        if error.code == 404:
+            raise RuntimeError(
+                f"Fandomダンプが見つかりません: {wiki_id} "
+                "(Wiki IDを確認するか、Special:Statisticsで生成を依頼してください)"
+            ) from error
+        raise RuntimeError(
+            f"Fandomダンプを取得できませんでした (HTTP {error.code})"
+        ) from error
+    except URLError as error:
+        raise RuntimeError(f"Fandomダンプを取得できませんでした: {error.reason}") from error
+
+    actual = destination.stat().st_size
+    if expected and actual != expected:
+        raise RuntimeError(
+            f"ダウンロードが不完全です: {actual:,} / {expected:,} bytes"
+        )
+    print(f"  ダウンロード完了: {actual / (1024 * 1024):.1f} MiB", flush=True)
+
+
+def extract_7z(archive: Path, destination: Path, expected_name: str) -> Path:
+    print("  7zアーカイブを展開しています…", flush=True)
+    for command_name in ("7zz", "7z", "7zr"):
+        command = shutil.which(command_name)
+        if command is None:
+            continue
+        result = subprocess.run(
+            [command, "x", "-y", f"-o{destination}", str(archive), expected_name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip()
+            raise RuntimeError(f"7zアーカイブを展開できませんでした: {detail}")
+        break
+    else:
+        try:
+            import py7zr
+        except ImportError as error:
+            raise RuntimeError(
+                "7zの展開機能がありません。7-Zipをインストールするか、"
+                "python3 -m pip install py7zr を実行してください"
+            ) from error
+        try:
+            with py7zr.SevenZipFile(archive, mode="r") as seven_zip:
+                names = seven_zip.getnames()
+                if expected_name not in names:
+                    raise RuntimeError(
+                        f"7z内に {expected_name} がありません: {', '.join(names)}"
+                    )
+                seven_zip.extract(path=destination, targets=[expected_name])
+        except RuntimeError:
+            raise
+        except Exception as error:
+            raise RuntimeError(f"7zアーカイブを展開できませんでした: {error}") from error
+
+    extracted = destination / expected_name
+    if not extracted.is_file():
+        raise RuntimeError(f"7z内に {expected_name} がありません")
+    return extracted
+
+
 def parse_timestamp(value: str) -> int:
     if not value:
         return 0
@@ -91,6 +207,46 @@ def wiki_base_url(base: str) -> str:
         path += "/"
     scheme = "https" if parts.scheme in ("http", "https") else parts.scheme
     return urlunsplit((scheme, parts.netloc, path, "", ""))
+
+
+def license_metadata(title: str, body: str) -> dict[str, str]:
+    """Extract a Creative Commons notice from a copyright-page body."""
+    match = CREATIVE_COMMONS_URL.search(body)
+    if match is None:
+        return {}
+    code = match.group("code").lower()
+    version = match.group("version")
+    notice = body.strip().split("\n\n", 1)[0].strip()
+    return {
+        "license_name": f"CC {code.upper()} {version}",
+        "license_url": f"https://creativecommons.org/licenses/{code}/{version}/",
+        "license_source_title": title,
+        "license_notice": notice,
+        "license_scope": "wiki_text",
+    }
+
+
+def find_license_metadata(project_pages: dict[str, str]) -> dict[str, str]:
+    """Find a project copyright page, following ordinary wiki redirects."""
+    for source_title, source_body in project_pages.items():
+        page_name = source_title.rsplit(":", 1)[-1].strip().casefold()
+        if page_name not in LICENSE_PAGE_NAMES:
+            continue
+        body = source_body
+        visited = {source_title}
+        for _ in range(5):
+            redirect = WIKI_REDIRECT.match(body)
+            if redirect is None:
+                break
+            target = redirect.group(1).strip()
+            if target in visited or target not in project_pages:
+                break
+            visited.add(target)
+            body = project_pages[target]
+        metadata = license_metadata(source_title, body)
+        if metadata:
+            return metadata
+    return {}
 
 
 def check_fts5() -> None:
@@ -159,6 +315,7 @@ def create_database(source: Path, destination: Path) -> dict[str, object]:
     counts: Counter[int] = Counter()
     namespaces: dict[int, str] = {}
     site: dict[str, str] = {}
+    project_pages: dict[str, str] = {}
     page_count = 0
 
     try:
@@ -202,6 +359,8 @@ def create_database(source: Path, destination: Path) -> dict[str, object]:
                 page_count += 1
                 namespaces = current_namespaces
                 site = current_site
+                if record[1] == 4:
+                    project_pages[record[2]] = record[3]
                 if len(batch) >= 500:
                     connection.executemany(
                         "INSERT INTO pages VALUES (?, ?, ?, ?, ?, ?, ?)", batch
@@ -234,6 +393,7 @@ def create_database(source: Path, destination: Path) -> dict[str, object]:
             "generated_at": generated_at,
             "page_count": str(page_count),
         }
+        metadata.update(find_license_metadata(project_pages))
         connection.executemany(
             "INSERT INTO metadata(key, value) VALUES (?, ?)", metadata.items()
         )
@@ -313,18 +473,38 @@ def main() -> int:
         description="MediaWiki XML アーカイブから fandom-isearch 用DBを作成します"
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {app_version()}")
-    parser.add_argument("archive", type=Path, help="MediaWiki XML (.xml/.gz/.bz2)")
+    parser.add_argument(
+        "archive",
+        help="Fandom Wiki ID または MediaWiki XML (.xml/.gz/.bz2)",
+    )
     args = parser.parse_args()
-    source = args.archive.expanduser().resolve()
-    if not source.is_file():
-        parser.error(f"ファイルがありません: {source}")
+    requested = args.archive
+    local_source = Path(requested).expanduser()
+    wiki_id = ""
+    if local_source.is_file():
+        local_source = local_source.resolve()
+    elif FANDOM_WIKI_ID.fullmatch(requested):
+        wiki_id = requested.lower()
+    else:
+        parser.error(f"ファイルがないか、Fandom Wiki IDが不正です: {requested}")
 
     try:
         check_fts5()
         DB_DIR.mkdir(parents=True, exist_ok=True)
-        destination = DB_DIR / f"{archive_name(source)}.db"
-        print(f"{source} → {destination}", flush=True)
-        entry = create_database(source, destination)
+        if wiki_id:
+            xml_name = f"{wiki_id}_pages_current.xml"
+            destination = DB_DIR / f"{wiki_id}_pages_current.db"
+            with tempfile.TemporaryDirectory(prefix=f"fandom-isearch-{wiki_id}-") as name:
+                work = Path(name)
+                archive = work / f"{xml_name}.7z"
+                download_dump(wiki_id, archive)
+                source = extract_7z(archive, work, xml_name)
+                print(f"{source.name} → {destination}", flush=True)
+                entry = create_database(source, destination)
+        else:
+            destination = DB_DIR / f"{archive_name(local_source)}.db"
+            print(f"{local_source} → {destination}", flush=True)
+            entry = create_database(local_source, destination)
         update_manifest(entry)
     except (OSError, ValueError, RuntimeError, ParseError, sqlite3.Error) as error:
         print(f"makedb: {error}", file=sys.stderr)

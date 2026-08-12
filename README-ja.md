@@ -6,9 +6,23 @@ fandom-isearchはFandom（MediaWiki）のXMLアーカイブをローカルのSQL
 
 ![fandom-isearchのブラウザ検索画面](img/fandom-isearch-screenshot.png)
 
+[(スクリーンショットの著作権は CC-BY-SA 3.0)](https://googology.fandom.com/ja/wiki/%E5%B7%A8%E5%A4%A7%E6%95%B0%E7%A0%94%E7%A9%B6_Wiki:%E8%91%97%E4%BD%9C%E6%A8%A9)
+
 ## DBを作る
 
-Python 3でDBを作成します。
+Fandom Wiki IDを指定すると、最新のCurrent pagesアーカイブをダウンロードしてDBまで一括で作成します。
+
+```console
+$ ./makedb googology
+```
+
+自動ダウンロードには`7z`、`7zz`、`7zr`コマンドのいずれか、またはPythonの`py7zr`パッケージが必要です。
+
+```console
+$ python3 -m pip install -r requirements.txt
+```
+
+手元にあるアーカイブから作成することもできます。
 
 ```console
 $ ./makedb data/jagoogology_pages_current.xml
@@ -71,6 +85,7 @@ $ ln -s "$(pwd)/fandom-search" ~/bin/fandom-search
 - 3文字以上の検索にはSQLite FTS5 trigram索引を使い、1〜2文字では部分一致検索へフォールバックします。
 - 最大200件を更新日時の新しい順に表示します。
 - 複数のDBを作ると、画面にアーカイブ選択が追加されます。
+- プロジェクトの著作権ページからCreative Commonsライセンスを特定できた場合、選択中アーカイブのライセンスと根拠ページをフッターに表示します。この表示はコメント・ディスカッションを対象にしません。
 
 ブラウザは`navigator.language`を判定します。`ja`で始まるロケールなら日本語、それ以外は英語を使用します。テスト時は`?lang=en`または`?lang=ja`でブラウザロケールより優先できます。未対応の`lang`値は自動判定へフォールバックします。ターミナルCLIは`LC_ALL`、`LC_MESSAGES`、`LANGUAGE`、`LANG`に同じ自動判定規則を適用します。ツールが生成するUI、ヘルプ、状態、エラーメッセージは翻訳し、アーカイブ由来の名前空間名とページ内容は原文のまま表示します。
 
@@ -88,13 +103,14 @@ XMLの各ページから次の値をDBへ保存します。
 
 - ページID、名前空間、ページタイトル、本文
 - 最新リビジョンの編集者、リビジョンID、更新日時
-- サイト名、記事URLの基点、MediaWikiバージョンなどのメタデータ
+- サイト名、記事URLの基点、MediaWikiバージョン、プロジェクトの著作権ページから特定したCreative Commonsライセンスなどのメタデータ
 
 編集コメント（リビジョンの編集要約）は保存・検索しません。
 
 ## 必要環境
 
 - Python 3.9以降
+- Fandom Wiki IDからダウンロードする場合は7-Zipまたは`py7zr`
 - FTS5およびtrigram tokenizerが有効なPython標準SQLite
 - WebAssemblyを利用できるモダンブラウザ
 

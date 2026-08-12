@@ -56,6 +56,11 @@
       databaseListWarning: 'Could not load database list',
       noDatabase: 'No databases',
       noDatabaseMessage: 'No database found. Run ./makedb archive.xml first',
+      licensePrefix: 'Wiki text in this archive is available under',
+      licenseSuffix: 'unless otherwise noted.',
+      licenseDiscussionCaveat: 'This notice is not applied to comments or discussions.',
+      licenseSource: 'Source:',
+      licenseNotDetected: 'License information was not detected in this archive.',
     },
     ja: {
       homeLabel: 'fandom isearch ホーム',
@@ -107,6 +112,11 @@
       databaseListWarning: 'DB一覧を読み込めませんでした',
       noDatabase: 'DBがありません',
       noDatabaseMessage: 'DBがありません。先に ./makedb archive.xml を実行してください',
+      licensePrefix: 'このアーカイブのWikiテキストは、特記のない限り',
+      licenseSuffix: 'で提供されています。',
+      licenseDiscussionCaveat: 'コメント・ディスカッションにはこの表示を適用していません。',
+      licenseSource: '出典:',
+      licenseNotDetected: 'このアーカイブからライセンス情報を検出できませんでした。',
     },
   };
 

@@ -6,9 +6,23 @@ fandom-isearch converts a Fandom (MediaWiki) XML archive into a local SQLite dat
 
 ![fandom-isearch browser search interface](img/fandom-isearch-screenshot.png)
 
+[(The screenshot is licensed under CC-BY-SA 3.0)](https://googology.fandom.com/ja/wiki/%E5%B7%A8%E5%A4%A7%E6%95%B0%E7%A0%94%E7%A9%B6_Wiki:%E8%91%97%E4%BD%9C%E6%A8%A9)
+
 ## Build a database
 
-Use Python 3 to build the database:
+Pass a Fandom Wiki ID to download its latest Current pages archive and build the database in one command:
+
+```console
+$ ./makedb googology
+```
+
+The automatic download requires either a `7z`, `7zz`, or `7zr` command, or the Python `py7zr` package:
+
+```console
+$ python3 -m pip install -r requirements.txt
+```
+
+You can also build a database from an existing local archive:
 
 ```console
 $ ./makedb data/jagoogology_pages_current.xml
@@ -71,6 +85,7 @@ $ ln -s "$(pwd)/fandom-search" ~/bin/fandom-search
 - Searches of at least three characters use the SQLite FTS5 trigram index. One- and two-character searches fall back to substring matching.
 - Up to 200 results are shown, newest first.
 - Building more than one database adds an archive selector to the page.
+- When a project copyright page identifies a Creative Commons license, the footer displays that license and its source page for the selected archive. The notice does not cover comments or discussions.
 
 The browser detects `navigator.language`. A locale beginning with `ja` selects Japanese; all other locales select English. For testing, `?lang=en` or `?lang=ja` overrides the browser locale. Unsupported `lang` values fall back to automatic detection. The terminal CLI applies the same automatic rule to `LC_ALL`, `LC_MESSAGES`, `LANGUAGE`, or `LANG`. Tool-generated UI, help, status, and error messages are translated; archive-provided namespace names and page content remain in their source language.
 
@@ -88,13 +103,14 @@ The database stores the following values from each XML page:
 
 - Page ID, namespace, page title, and body
 - Latest revision editor, revision ID, and update time
-- Metadata including the site name, article URL base, and MediaWiki version
+- Metadata including the site name, article URL base, MediaWiki version, and a Creative Commons license identified from the project's copyright page
 
 Revision edit summaries are neither stored nor searched.
 
 ## Requirements
 
 - Python 3.9 or later
+- 7-Zip or `py7zr` when downloading a Fandom archive by Wiki ID
 - Python's SQLite built with FTS5 and the trigram tokenizer
 - A modern browser with WebAssembly support
 

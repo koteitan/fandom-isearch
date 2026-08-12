@@ -23,6 +23,7 @@ const elements = {
   darkMode: document.getElementById('darkMode'),
   protocolWarning: document.getElementById('protocolWarning'),
   appVersion: document.getElementById('appVersion'),
+  licenseNotice: document.getElementById('licenseNotice'),
 };
 
 let sqlite3 = null;
@@ -474,6 +475,43 @@ function articleUrl(title) {
   return metadata.wiki_base_url + encoded;
 }
 
+function renderLicense() {
+  const container = elements.licenseNotice;
+  container.replaceChildren();
+  if (!metadata.license_name || !metadata.license_url) {
+    container.textContent = t('licenseNotDetected');
+    container.hidden = false;
+    return;
+  }
+
+  const licenseLink = document.createElement('a');
+  licenseLink.href = metadata.license_url;
+  licenseLink.target = '_blank';
+  licenseLink.rel = 'license noopener';
+  licenseLink.textContent = metadata.license_name;
+  container.append(document.createTextNode(`${t('licensePrefix')} `), licenseLink);
+  container.append(document.createTextNode(` ${t('licenseSuffix')}`));
+  if (metadata.license_scope === 'wiki_text') {
+    container.append(document.createTextNode(` ${t('licenseDiscussionCaveat')}`));
+  }
+
+  if (metadata.license_source_title) {
+    const sourceUrl = articleUrl(metadata.license_source_title);
+    container.append(document.createTextNode(` ${t('licenseSource')} `));
+    if (sourceUrl) {
+      const sourceLink = document.createElement('a');
+      sourceLink.href = sourceUrl;
+      sourceLink.target = '_blank';
+      sourceLink.rel = 'noopener';
+      sourceLink.textContent = metadata.license_source_title;
+      container.append(sourceLink);
+    } else {
+      container.append(document.createTextNode(metadata.license_source_title));
+    }
+  }
+  container.hidden = false;
+}
+
 function renderResults(rows, terms, fields) {
   if (!rows.length) {
     elements.results.innerHTML = `<div class="empty">${t('noResults')}</div>`;
@@ -508,6 +546,7 @@ async function loadDatabase(file) {
   elements.namespaceGrid.innerHTML = '';
   elements.namespaceSummary.textContent = t('loading');
   elements.results.innerHTML = '';
+  elements.licenseNotice.hidden = true;
   elements.meta.textContent = t('loadingFile', {file});
   try {
     if (!/^[^/\\]+\.db$/u.test(file)) throw new Error(t('invalidDatabaseName'));
@@ -540,6 +579,7 @@ async function loadDatabase(file) {
     metadata = Object.fromEntries(
       queryRows(database, 'SELECT key, value FROM metadata').map((row) => [row.key, row.value]),
     );
+    renderLicense();
     namespaces = queryRows(
       database,
       'SELECT id, name, page_count FROM namespaces ORDER BY id',
