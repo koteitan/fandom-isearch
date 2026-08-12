@@ -1,5 +1,6 @@
 import sqlite3InitModule from './vendor/sqlite3.js';
 
+const {locale, t} = window.FandomI18n;
 const LIMIT = 200;
 const UI_KEY = 'fandom-isearch:ui';
 const DB_KEY = 'fandom-isearch:database';
@@ -155,7 +156,9 @@ function syncUrl() {
 }
 
 function namespaceLabel(namespace) {
-  return namespace.id === 0 ? '標準（記事）' : (namespace.name || `名前空間 ${namespace.id}`);
+  return namespace.id === 0
+    ? t('standardNamespace')
+    : (namespace.name || t('unnamedNamespace', {id: namespace.id}));
 }
 
 function renderNamespaceOptions() {
@@ -171,7 +174,7 @@ function renderNamespaceOptions() {
     const name = document.createElement('span');
     name.textContent = namespaceLabel(namespace);
     const count = document.createElement('small');
-    count.textContent = Number(namespace.page_count).toLocaleString('ja-JP');
+    count.textContent = Number(namespace.page_count).toLocaleString(locale);
     caption.append(name, count);
     label.append(input, caption);
     elements.namespaceGrid.append(label);
@@ -183,8 +186,8 @@ function updateNamespaceSummary() {
   const selected = selectedNamespaces().length;
   const total = namespaces.length;
   elements.namespaceSummary.textContent = selected === total
-    ? `すべて（${total}）`
-    : `${selected} / ${total} 選択`;
+    ? t('allSelected', {total})
+    : t('selectionCount', {selected, total});
 }
 
 function scheduleSearch() {
@@ -346,13 +349,13 @@ function runSearch() {
   const namespaceIds = selectedNamespaces();
 
   if (!namespaceIds.length) {
-    elements.meta.textContent = '名前空間を1つ以上選択してください';
-    elements.results.innerHTML = '<div class="empty">検索する名前空間が選択されていません</div>';
+    elements.meta.textContent = t('namespaceRequired');
+    elements.results.innerHTML = `<div class="empty">${t('noNamespaceSelected')}</div>`;
     return;
   }
   if (raw && !fields.length) {
-    elements.meta.textContent = '検索対象を1つ以上選択してください';
-    elements.results.innerHTML = '<div class="empty">検索対象が選択されていません</div>';
+    elements.meta.textContent = t('targetRequired');
+    elements.results.innerHTML = `<div class="empty">${t('noTargetSelected')}</div>`;
     return;
   }
 
@@ -392,11 +395,15 @@ function runSearch() {
     const targetTotal = namespaces
       .filter((item) => namespaceIds.includes(item.id))
       .reduce((sum, item) => sum + Number(item.page_count), 0);
-    elements.meta.textContent = `${rows.length.toLocaleString('ja-JP')}${truncated ? '+' : ''}件` +
-      ` / 対象${targetTotal.toLocaleString('ja-JP')}ページ · ${elapsed} ms`;
+    elements.meta.textContent = t('resultsMeta', {
+      count: rows.length.toLocaleString(locale),
+      more: truncated ? '+' : '',
+      total: targetTotal.toLocaleString(locale),
+      ms: elapsed,
+    });
   } catch (error) {
     console.error(error);
-    elements.meta.textContent = `検索エラー: ${error.message}`;
+    elements.meta.textContent = t('searchError', {message: error.message});
   }
 }
 
@@ -434,7 +441,7 @@ function highlight(value, terms) {
 
 function excerpt(body, terms, preferMatch) {
   const value = String(body || '');
-  if (!value) return {text: '（本文なし）', prefix: '', suffix: ''};
+  if (!value) return {text: t('noBody'), prefix: '', suffix: ''};
   const maxLength = 430;
   let start = 0;
   if (terms.length && preferMatch) {
@@ -454,8 +461,8 @@ function excerpt(body, terms, preferMatch) {
 }
 
 function formatDate(timestamp) {
-  if (!timestamp) return '日時不明';
-  return new Date(Number(timestamp) * 1000).toLocaleString('ja-JP', {
+  if (!timestamp) return t('unknownDate');
+  return new Date(Number(timestamp) * 1000).toLocaleString(locale, {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit',
   });
@@ -469,7 +476,7 @@ function articleUrl(title) {
 
 function renderResults(rows, terms, fields) {
   if (!rows.length) {
-    elements.results.innerHTML = '<div class="empty">該当するページはありません</div>';
+    elements.results.innerHTML = `<div class="empty">${t('noResults')}</div>`;
     return;
   }
   const namespaceMap = new Map(namespaces.map((item) => [item.id, namespaceLabel(item)]));
@@ -486,7 +493,7 @@ function renderResults(rows, terms, fields) {
       <div class="card-top">
         <span class="badge">${escapeHtml(namespaceMap.get(row.namespace) || row.namespace)}</span>
         <span>${escapeHtml(formatDate(row.updated_at))}</span>
-        <span class="author">編集者: ${highlight(row.author || '不明', authorTerms)}</span>
+        <span class="author">${t('editorPrefix')} ${highlight(row.author || t('unknown'), authorTerms)}</span>
       </div>
       <h2>${titleHtml}</h2>
       <div class="content">${body.prefix}${highlight(body.text, bodyTerms)}${body.suffix}</div>
@@ -499,15 +506,15 @@ async function loadDatabase(file) {
   const sequence = ++loadSequence;
   elements.query.disabled = true;
   elements.namespaceGrid.innerHTML = '';
-  elements.namespaceSummary.textContent = '読み込み中…';
+  elements.namespaceSummary.textContent = t('loading');
   elements.results.innerHTML = '';
-  elements.meta.textContent = `${file} を読み込み中…`;
+  elements.meta.textContent = t('loadingFile', {file});
   try {
-    if (!/^[^/\\]+\.db$/u.test(file)) throw new Error('不正なDBファイル名です');
+    if (!/^[^/\\]+\.db$/u.test(file)) throw new Error(t('invalidDatabaseName'));
     sqlite3 ||= await sqlite3InitModule();
     const url = new URL(`./db/${encodeURIComponent(file)}`, import.meta.url);
     const response = await fetch(url, {cache: 'no-cache'});
-    if (!response.ok) throw new Error(`DBを取得できませんでした（HTTP ${response.status}）`);
+    if (!response.ok) throw new Error(t('databaseFetchError', {status: response.status}));
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (sequence !== loadSequence) return;
 
@@ -525,7 +532,7 @@ async function loadDatabase(file) {
     const version = queryRows(nextDatabase, 'PRAGMA user_version')[0]?.user_version;
     if (Number(version) !== 1) {
       nextDatabase.close();
-      throw new Error(`未対応のDB形式です（version ${version}）`);
+      throw new Error(t('unsupportedDatabase', {version}));
     }
 
     if (database) database.close();
@@ -545,8 +552,8 @@ async function loadDatabase(file) {
   } catch (error) {
     console.error(error);
     if (sequence !== loadSequence) return;
-    elements.meta.textContent = `読み込み失敗: ${error.message}`;
-    elements.results.innerHTML = '<div class="empty">先に <code>./makedb archive.xml</code> を実行してください</div>';
+    elements.meta.textContent = t('loadFailed', {message: error.message});
+    elements.results.innerHTML = `<div class="empty">${t('buildDatabaseFirst')}</div>`;
   }
 }
 
@@ -559,7 +566,7 @@ async function initializeDatabaseList() {
       entries = Array.isArray(manifest.databases) ? manifest.databases : [];
     }
   } catch (error) {
-    console.warn('DB一覧を読み込めませんでした', error);
+    console.warn(t('databaseListWarning'), error);
   }
 
   const params = new URLSearchParams(location.search);
@@ -568,8 +575,8 @@ async function initializeDatabaseList() {
     entries.push({file: requested, name: requested.replace(/\.db$/u, ''), siteName: ''});
   }
   if (!entries.length) {
-    elements.database.innerHTML = '<option>DBがありません</option>';
-    elements.meta.textContent = 'DBがありません。先に ./makedb archive.xml を実行してください';
+    elements.database.innerHTML = `<option>${t('noDatabase')}</option>`;
+    elements.meta.textContent = t('noDatabaseMessage');
     return;
   }
 

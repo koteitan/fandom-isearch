@@ -1,101 +1,99 @@
+[← Back](../README.md) | [English](README.md) | [Japanese](README-ja.md)
+
 # fandom-isearch
 
-Fandom（MediaWiki）のXMLアーカイブをローカルのSQLite DBに変換し、ブラウザでインクリメンタル検索するツールです。ページタイトル、本文、編集者を対象に、日本語を含む部分一致検索ができます。
+fandom-isearch converts a Fandom (MediaWiki) XML archive into a local SQLite database and provides incremental search in a browser or terminal. It supports substring matching, including Japanese text, across page titles, body text, and editors.
 
-## 使い方
+## Build a database
 
-Python 3でDBを作成します。
+Use Python 3 to build the database:
 
 ```console
 $ ./makedb data/jagoogology_pages_current.xml
-/.../data/jagoogology_pages_current.xml → /.../web/db/jagoogology_pages_current.db
-  5,000 ページを読み込みました…
-  検索インデックスを作成しています…
-完了: 9,178 ページ / 52.5 MiB
 ```
 
-生成物は `web/db/<XMLファイル名>.db` です。`.xml.gz` と `.xml.bz2` も直接読み込めます。`makedb` を再実行すると同名のDBが安全に置き換わります。
+The output is `web/db/<XML-filename>.db`. The command can also read `.xml.gz` and `.xml.bz2` files directly. Running `makedb` again atomically replaces the database with the same name.
 
-SQLite WebAssemblyを使うため、`index.html` は `file://` ではなくローカルHTTPサーバー経由で開きます。
+SQLite WebAssembly cannot run from `file://`, so serve `index.html` over the bundled local HTTP server:
 
 ```console
 $ ./serve
 fandom-isearch: http://127.0.0.1:8000/
 ```
 
-ブラウザで <http://127.0.0.1:8000/> を開いてください。別のポートを使う場合は、例えば `./serve 8080` とします。
+Open <http://127.0.0.1:8000/> in a browser. To use another port, run a command such as `./serve 8080`.
 
-## Agent・ターミナル用CLI
+## Agent and terminal CLI
 
-`fandom-search` は `findmine` と同様に、引数ありではワンショット検索、TTYで引数なしならcursesによるインクリメンタル検索になります。
+Like `findmine`, `fandom-search` performs a one-shot search when given arguments and opens a curses incremental-search interface when run without arguments on a TTY.
 
 ```console
-$ ./fandom-search 不可説不可説転 --limit 10
-$ ./fandom-search '巨大数 グラハム' --url
-$ ./fandom-search                         # 対話検索
+$ ./fandom-search googol --limit 10
+$ ./fandom-search 'large number' --url
+$ ./fandom-search                         # interactive search
 ```
 
-検索対象は `--target`（別名 `--search-target`）で複数指定できます。引数なしで指定すると選択肢を一覧表示します。
+Use `--target` (alias: `--search-target`) repeatedly to select search targets. Omit its value to list the available targets:
 
 ```console
 $ ./fandom-search --search-target
 TARGET  DESCRIPTION
-title   ページタイトル
-body    本文
-author  編集者
+title   Page title
+body    Body
+author  Editor
 
-$ ./fandom-search Kyodaisuu --target author
-$ ./fandom-search 巨大数 --target title --target body
+$ ./fandom-search Alice --target author
+$ ./fandom-search googol --target title --target body
 ```
 
-名前空間は `--name-space`（別名 `--namespace`）で複数指定できます。名前、IDのどちらでも指定でき、引数なしならDB内の名前空間一覧とページ数を表示します。
+Use `--name-space` (alias: `--namespace`) repeatedly to select namespaces. A namespace can be specified by name or ID. Omit the value to list the namespaces in the selected database and their page counts:
 
 ```console
 $ ./fandom-search --name-space
-$ ./fandom-search 巨大数 --name-space '標準（記事）'
-$ ./fandom-search 巨大数 --name-space 0 --name-space ユーザーブログ
+$ ./fandom-search googol --name-space 'Main (articles)'
+$ ./fandom-search googol --name-space 0 --name-space 500
 ```
 
-DBは `web/db/databases.json` の先頭を自動選択します。別のDBは `--db web/db/example.db` で指定できます。PATHを通して使う場合は、実体へのシンボリックリンクを作れます。
+The CLI selects the first entry in `web/db/databases.json` by default. Use `--db web/db/example.db` to select another database. To invoke it from anywhere, create a symbolic link to the actual script:
 
 ```console
 $ ln -s "$(pwd)/fandom-search" ~/bin/fandom-search
 ```
 
-## 検索UI
+## Search UI and syntax
 
-- 検索対象は「ページタイトル」「本文」「編集者」から複数選択できます。
-- 名前空間も複数選択できます。初期状態は全選択で、一覧は折り畳まれています。
-- 名前空間には、そのDBに実際にページが存在するものだけが表示されます。
-- 空白区切りはAND検索、未引用の大文字 `OR` はOR検索、`"abc def"` は空白を含むフレーズ検索です。明示的な `AND` も使用できます。
-- 3文字以上の検索にはSQLite FTS5 trigram索引を使い、1〜2文字では部分一致検索へフォールバックします。
-- 最大200件を更新日時の新しい順に表示します。
-- 複数のDBを作ると、画面上部のアーカイブ選択に追加されます。
+- Page title, body, and editor can be enabled independently as search targets.
+- Multiple namespaces can be selected. All are enabled initially, and the namespace list is collapsed by default.
+- Only namespaces that contain pages in the selected database are displayed.
+- Space-separated terms use AND. An unquoted uppercase `OR` uses OR. `"abc def"` matches a phrase containing the space. Explicit `AND` is also accepted.
+- Searches of at least three characters use the SQLite FTS5 trigram index. One- and two-character searches fall back to substring matching.
+- Up to 200 results are shown, newest first.
+- Building more than one database adds an archive selector to the page.
 
-検索語、DB、検索対象、名前空間はURLクエリに反映されます。そのURLをコピーすると同じ条件を再現できます。
+The browser detects `navigator.language`. A locale beginning with `ja` selects Japanese; all other locales select English. For testing, `?lang=en` or `?lang=ja` overrides the browser locale. Unsupported `lang` values fall back to automatic detection. The terminal CLI applies the same automatic rule to `LC_ALL`, `LC_MESSAGES`, `LANGUAGE`, or `LANG`. Tool-generated UI, help, status, and error messages are translated; archive-provided namespace names and page content remain in their source language.
 
-初期状態でONの項目はURLに出さず、OFFにした例外だけを記録します。例えば編集者とユーザーブログ名前空間を検索対象から外した場合は次のようになります。
+The search query, database, targets, and namespaces are reflected in the URL, so copying the URL reproduces the same search. Options that are on by default are omitted; only disabled exceptions are recorded. For example, disabling the editor target and namespace 500 produces:
 
 ```text
-?q=巨大数&db=jagoogology_pages_current.db&exclude=author&excludeNs=500
+?q=googol&db=jagoogology_pages_current.db&exclude=author&excludeNs=500
 ```
 
-全項目ONなら `exclude` と `excludeNs` はどちらも付きません。全項目をOFFにした場合は全値が列挙されます。ダークモードと名前空間パネルの開閉状態はブラウザの `localStorage` に保存されます。
+When all checkboxes are on, neither `exclude` nor `excludeNs` is present. Turning every item off lists every value. Dark mode and namespace-panel expansion are stored in browser `localStorage`.
 
-## DBに保存する情報
+## Stored data
 
-XMLの各ページから次の情報を保存します。
+The database stores the following values from each XML page:
 
-- ページID、名前空間、ページタイトル、本文
-- 最新リビジョンの編集者、リビジョンID、更新日時
-- サイト名、記事URLの基点、MediaWikiバージョンなどのメタデータ
+- Page ID, namespace, page title, and body
+- Latest revision editor, revision ID, and update time
+- Metadata including the site name, article URL base, and MediaWiki version
 
-編集コメント（リビジョンの編集要約）は保存・検索しません。
+Revision edit summaries are neither stored nor searched.
 
-## 必要環境
+## Requirements
 
-- Python 3.9以降
-- FTS5およびtrigram tokenizerが有効なPython標準SQLite
-- WebAssemblyを利用できるモダンブラウザ
+- Python 3.9 or later
+- Python's SQLite built with FTS5 and the trigram tokenizer
+- A modern browser with WebAssembly support
 
-フロントエンドはビルド不要のHTML/CSS/JavaScriptです。SQLite WebAssemblyは `web/vendor/` に同梱しています。
+The frontend is build-free HTML, CSS, and JavaScript. SQLite WebAssembly is bundled in `web/vendor/`.

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -19,74 +19,81 @@
 </head>
 <body>
   <header class="page-header">
-    <a class="brand" href="./" aria-label="fandom isearch ホーム">
+    <a class="brand" href="./" aria-label="fandom isearch home" data-i18n-aria-label="homeLabel">
       <span class="brand-mark">⌕</span>
       <h1>fandom isearch</h1>
     </a>
     <div class="menu-container" id="menuContainer">
       <button type="button" class="menu-toggle" id="menuToggle"
-        aria-label="メニュー" aria-expanded="false" aria-controls="menuDropdown">☰</button>
+        aria-label="Menu" data-i18n-aria-label="menuLabel"
+        aria-expanded="false" aria-controls="menuDropdown">☰</button>
       <div class="menu-dropdown" id="menuDropdown">
         <label class="checkbox-row">
           <input id="darkMode" type="checkbox">
-          <span>ダークモード</span>
+          <span data-i18n="darkMode">Dark mode</span>
         </label>
       </div>
     </div>
   </header>
 
   <div class="protocol-warning" id="protocolWarning" hidden>
-    SQLite WebAssembly は <code>file://</code> から読み込めません。
-    リポジトリで <code>./serve</code> を実行し、表示されたURLを開いてください。
+    <span data-i18n="protocolBefore">SQLite WebAssembly cannot load from</span>
+    <code>file://</code>
+    <span data-i18n="protocolAfterRun">. Run</span> <code>./serve</code>
+    <span data-i18n="protocolAfterOpen">in the repository and open the displayed URL.</span>
   </div>
 
   <main>
-    <section class="search-panel" aria-label="検索">
+    <section class="search-panel" aria-label="Search" data-i18n-aria-label="searchLabel">
       <div class="database-row">
-        <label for="database">アーカイブ</label>
+        <label for="database" data-i18n="archive">Archive</label>
         <select id="database" disabled>
-          <option>DB一覧を読み込み中…</option>
+          <option data-i18n="loadingDatabaseList">Loading database list…</option>
         </select>
       </div>
 
-      <input id="query" type="search" placeholder="検索…（部分一致・日本語OK）"
-        aria-label="検索語" aria-describedby="searchHelp"
+      <input id="query" type="search" placeholder="Search… (substring match)"
+        data-i18n-placeholder="searchPlaceholder"
+        aria-label="Search query" data-i18n-aria-label="searchQueryLabel"
+        aria-describedby="searchHelp"
         autocomplete="off" spellcheck="false" autofocus disabled>
       <p class="search-help" id="searchHelp">
-        空白はAND・<code>OR</code> はOR・<code>"abc def"</code> は空白を含むフレーズ
+        <span data-i18n="searchHelpBefore">Spaces mean AND;</span>
+        <code>OR</code> <span data-i18n="searchHelpMiddle">means OR;</span>
+        <code>"abc def"</code> <span data-i18n="searchHelpAfter">matches a phrase containing a space</span>
       </p>
 
       <fieldset class="target-fields">
-        <legend>検索対象</legend>
+        <legend data-i18n="searchTargets">Search targets</legend>
         <label class="checkbox-row">
           <input type="checkbox" name="field" value="title" checked>
-          <span>ページタイトル</span>
+          <span data-i18n="pageTitle">Page title</span>
         </label>
         <label class="checkbox-row">
           <input type="checkbox" name="field" value="body" checked>
-          <span>本文</span>
+          <span data-i18n="body">Body</span>
         </label>
         <label class="checkbox-row">
           <input type="checkbox" name="field" value="author" checked>
-          <span>編集者</span>
+          <span data-i18n="editor">Editor</span>
         </label>
       </fieldset>
 
       <details class="namespace-filter" id="namespaceDetails">
         <summary>
-          <span>名前空間</span>
-          <span class="selection-summary" id="namespaceSummary">読み込み中…</span>
+          <span data-i18n="namespaces">Namespaces</span>
+          <span class="selection-summary" id="namespaceSummary" data-i18n="loading">Loading…</span>
         </summary>
         <div class="namespace-actions">
-          <button type="button" id="selectAllNamespaces">すべて選択</button>
-          <button type="button" id="clearNamespaces">すべて解除</button>
+          <button type="button" id="selectAllNamespaces" data-i18n="selectAll">Select all</button>
+          <button type="button" id="clearNamespaces" data-i18n="clearAll">Clear all</button>
         </div>
         <div class="namespace-grid" id="namespaceGrid"></div>
       </details>
     </section>
 
-    <div class="meta" id="meta" role="status" aria-live="polite">DBを読み込み中…</div>
-    <section class="results" id="results" aria-label="検索結果"></section>
+    <div class="meta" id="meta" role="status" aria-live="polite" data-i18n="loadingDatabase">Loading database…</div>
+    <section class="results" id="results" aria-label="Search results" data-i18n-aria-label="searchResultsLabel"></section>
   </main>
 
   <footer>
@@ -94,11 +101,11 @@
     MediaWiki XML + SQLite FTS5
   </footer>
 
+  <script src="i18n.js"></script>
   <script>
     if (location.protocol === 'file:') {
       document.getElementById('protocolWarning').hidden = false;
-      document.getElementById('meta').textContent =
-        'ローカルHTTPサーバーが必要です。リポジトリで ./serve を実行してください';
+      document.getElementById('meta').textContent = window.FandomI18n.t('httpRequired');
     }
   </script>
   <script type="module" src="main.js"></script>

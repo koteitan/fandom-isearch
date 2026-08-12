@@ -28,10 +28,118 @@ SCRIPT_DIR = Path(os.path.dirname(os.path.realpath(__file__)))
 DB_DIR = SCRIPT_DIR / "web" / "db"
 MANIFEST = DB_DIR / "databases.json"
 LIST_SENTINEL = "\0LIST"
+
+
+def detect_language() -> str:
+    for variable in ("LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"):
+        value = os.environ.get(variable)
+        if value:
+            return "ja" if value.lower().startswith("ja") else "en"
+    current = locale.getlocale()[0] or ""
+    return "ja" if current.lower().startswith("ja") else "en"
+
+
+LANGUAGE = detect_language()
+MESSAGES = {
+    "en": {
+        "target_title": "Page title",
+        "target_body": "Body",
+        "target_author": "Editor",
+        "target_column": "TARGET",
+        "description_column": "DESCRIPTION",
+        "id_column": "ID",
+        "name_column": "NAME",
+        "pages_column": "PAGES",
+        "db_missing": "{path} not found. Run ./makedb <archive>.xml first",
+        "db_unsupported": "Unsupported database format: {path} (version {version})",
+        "db_open_failed": "Could not open database: {path}: {error}",
+        "standard_namespace": "Main (articles)",
+        "unnamed_namespace": "Namespace {id}",
+        "target_unknown": "Unknown search target: {value!r} (run --search-target without a value to list targets)",
+        "target_required": "Specify at least one search target",
+        "namespace_unknown": "Unknown namespace: {value!r} (run --name-space without a value to list namespaces)",
+        "namespace_required": "Specify at least one namespace",
+        "no_body": "(No body text)",
+        "unknown": "Unknown",
+        "all": "all",
+        "hits": "hits",
+        "target_short": "target",
+        "namespace_short": "ns",
+        "tui_keys": "Up/Down move  Enter URL  Esc quit",
+        "integer_required": "specify an integer",
+        "positive_required": "specify an integer of at least 1",
+        "description": "fandom-isearch - terminal search",
+        "help": "show this help message and exit",
+        "version_help": "show program version and exit",
+        "query_help": "search query (omit on a TTY for incremental search)",
+        "db_help": "SQLite DB (default: {path})",
+        "namespace_help": "filter by namespace (repeatable; omit NAME to list)",
+        "target_help": "select a search target (repeatable; omit TARGET to list)",
+        "limit_help": "maximum rows (default: 500)",
+        "url_help": "append article URL (one-shot mode)",
+        "positional_arguments": "positional arguments",
+        "options": "options",
+        "usage": "usage:",
+        "error": "error",
+        "unrecognized_arguments": "unrecognized arguments:",
+        "required_arguments": "the following arguments are required:",
+        "expected_argument": "argument {argument}: expected one argument",
+    },
+    "ja": {
+        "target_title": "ページタイトル",
+        "target_body": "本文",
+        "target_author": "編集者",
+        "target_column": "検索対象",
+        "description_column": "説明",
+        "id_column": "ID",
+        "name_column": "名前",
+        "pages_column": "ページ数",
+        "db_missing": "{path} がありません。先に ./makedb <archive>.xml を実行してください",
+        "db_unsupported": "未対応のDB形式です: {path} (version {version})",
+        "db_open_failed": "DBを開けません: {path}: {error}",
+        "standard_namespace": "標準（記事）",
+        "unnamed_namespace": "名前空間 {id}",
+        "target_unknown": "検索対象が不明です: {value!r} (--search-target を引数なしで実行すると一覧を表示します)",
+        "target_required": "検索対象を1つ以上指定してください",
+        "namespace_unknown": "名前空間が不明です: {value!r} (--name-space を引数なしで実行すると一覧を表示します)",
+        "namespace_required": "名前空間を1つ以上指定してください",
+        "no_body": "（本文なし）",
+        "unknown": "不明",
+        "all": "すべて",
+        "hits": "件",
+        "target_short": "検索対象",
+        "namespace_short": "名前空間",
+        "tui_keys": "↑↓ 移動  Enter URL  Esc 終了",
+        "integer_required": "整数を指定してください",
+        "positive_required": "1以上を指定してください",
+        "description": "fandom-isearch - ターミナル検索",
+        "help": "このヘルプを表示して終了",
+        "version_help": "バージョンを表示して終了",
+        "query_help": "検索語（省略かつTTYならインクリメンタル検索）",
+        "db_help": "SQLite DB (初期値: {path})",
+        "namespace_help": "名前空間で絞り込み（複数回可、NAME省略で一覧）",
+        "target_help": "検索対象を指定（複数回可、TARGET省略で一覧）",
+        "limit_help": "最大件数 (初期値: 500)",
+        "url_help": "記事URLを末尾に追加（ワンショット）",
+        "positional_arguments": "位置引数",
+        "options": "オプション",
+        "usage": "使い方:",
+        "error": "エラー",
+        "unrecognized_arguments": "認識できない引数:",
+        "required_arguments": "次の引数が必要です:",
+        "expected_argument": "引数 {argument}: 値が必要です",
+    },
+}
+
+
+def tr(key: str, **variables) -> str:
+    return MESSAGES[LANGUAGE][key].format(**variables)
+
+
 TARGETS = {
-    "title": "ページタイトル",
-    "body": "本文",
-    "author": "編集者",
+    "title": tr("target_title"),
+    "body": tr("target_body"),
+    "author": tr("target_author"),
 }
 TARGET_ALIASES = {
     "title": "title",
@@ -81,7 +189,7 @@ def default_db_path() -> Path:
 def open_db(path: Path) -> sqlite3.Connection:
     path = path.expanduser().resolve()
     if not path.is_file():
-        raise CliError(f"{path} がありません。先に ./makedb <archive>.xml を実行してください")
+        raise CliError(tr("db_missing", path=path))
     try:
         db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
         db.row_factory = sqlite3.Row
@@ -89,11 +197,11 @@ def open_db(path: Path) -> sqlite3.Connection:
         version = db.execute("PRAGMA user_version").fetchone()[0]
         if version != 1:
             db.close()
-            raise CliError(f"未対応のDB形式です: {path} (version {version})")
+            raise CliError(tr("db_unsupported", path=path, version=version))
         db.execute("SELECT 1 FROM pages LIMIT 1").fetchone()
         return db
     except sqlite3.Error as error:
-        raise CliError(f"DBを開けません: {path}: {error}") from error
+        raise CliError(tr("db_open_failed", path=path, error=error)) from error
 
 
 def metadata(db: sqlite3.Connection) -> dict[str, str]:
@@ -106,18 +214,18 @@ def namespace_rows(db: sqlite3.Connection) -> list[sqlite3.Row]:
 
 def namespace_label(namespace_id: int, name: str) -> str:
     if namespace_id == 0:
-        return "標準（記事）"
-    return name or f"名前空間 {namespace_id}"
+        return tr("standard_namespace")
+    return name or tr("unnamed_namespace", id=namespace_id)
 
 
 def print_targets() -> None:
-    print("TARGET\tDESCRIPTION")
+    print(f"{tr('target_column')}\t{tr('description_column')}")
     for target, description in TARGETS.items():
         print(f"{target}\t{description}")
 
 
 def print_namespaces(rows: list[sqlite3.Row]) -> None:
-    print("ID\tNAME\tPAGES")
+    print(f"{tr('id_column')}\t{tr('name_column')}\t{tr('pages_column')}")
     for row in rows:
         print(
             f"{row['id']}\t{namespace_label(row['id'], row['name'])}"
@@ -139,14 +247,11 @@ def resolve_targets(values: list[str] | None) -> list[str]:
     for value in split_options(values):
         target = TARGET_ALIASES.get(value.casefold())
         if target is None:
-            raise CliError(
-                f"検索対象が不明です: {value!r} "
-                "(--search-target を引数なしで実行すると一覧を表示します)"
-            )
+            raise CliError(tr("target_unknown", value=value))
         if target not in targets:
             targets.append(target)
     if not targets:
-        raise CliError("検索対象を1つ以上指定してください")
+        raise CliError(tr("target_required"))
     return targets
 
 
@@ -167,8 +272,10 @@ def resolve_namespaces(
     aliases.update(
         {
             "標準": 0,
+            "標準（記事）": 0,
             "記事": 0,
             "main": 0,
+            "main (articles)": 0,
             "article": 0,
         }
     )
@@ -177,14 +284,11 @@ def resolve_namespaces(
     for value in split_options(values):
         namespace_id = aliases.get(value.casefold())
         if namespace_id is None:
-            raise CliError(
-                f"名前空間が不明です: {value!r} "
-                "(--name-space を引数なしで実行すると一覧を表示します)"
-            )
+            raise CliError(tr("namespace_unknown", value=value))
         if namespace_id not in selected:
             selected.append(namespace_id)
     if not selected:
-        raise CliError("名前空間を1つ以上指定してください")
+        raise CliError(tr("namespace_required"))
     return selected
 
 
@@ -327,7 +431,7 @@ def compact(value: str) -> str:
 def excerpt(body: str, terms: list[str], length: int = 320) -> str:
     value = compact(body)
     if not value:
-        return "（本文なし）"
+        return tr("no_body")
     start = 0
     lower = value.lower()
     positions = [lower.find(term.lower()) for term in terms]
@@ -352,7 +456,7 @@ def format_result(
 ) -> str:
     date = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["updated_at"]))
     namespace = namespace_names.get(row["namespace"], str(row["namespace"]))
-    author = compact(row["author"]) or "不明"
+    author = compact(row["author"]) or tr("unknown")
     return (
         f"{date} [{namespace}] {compact(row['title'])} — {author} — "
         f"{excerpt(row['body'], terms)}"
@@ -455,13 +559,14 @@ def tui(
             selected = max(0, min(selected, len(rows) - 1))
             height, width = screen.getmaxyx()
             screen.erase()
-            namespace_summary = "all" if namespace_ids is None else ",".join(
+            namespace_summary = tr("all") if namespace_ids is None else ",".join(
                 namespace_names.get(item, str(item)) for item in namespace_ids
             )
             heading = (
-                f"fandom-search  {len(rows)} hits  "
-                f"[target:{','.join(targets)} ns:{namespace_summary}]  "
-                "[Up/Down move  Enter URL  Esc quit]"
+                f"fandom-search  {len(rows)} {tr('hits')}  "
+                f"[{tr('target_short')}:{','.join(targets)} "
+                f"{tr('namespace_short')}:{namespace_summary}]  "
+                f"[{tr('tui_keys')}]"
             )
             try:
                 screen.addnstr(0, 0, heading, width - 1, curses.A_BOLD)
@@ -534,20 +639,46 @@ def positive_int(value: str) -> int:
     try:
         number = int(value)
     except ValueError as error:
-        raise argparse.ArgumentTypeError("整数を指定してください") from error
+        raise argparse.ArgumentTypeError(tr("integer_required")) from error
     if number <= 0:
-        raise argparse.ArgumentTypeError("1以上を指定してください")
+        raise argparse.ArgumentTypeError(tr("positive_required"))
     return number
 
 
+class LocalizedArgumentParser(argparse.ArgumentParser):
+    def format_usage(self) -> str:
+        return super().format_usage().replace("usage:", tr("usage"), 1)
+
+    def format_help(self) -> str:
+        return super().format_help().replace("usage:", tr("usage"), 1)
+
+    def error(self, message: str) -> None:
+        if LANGUAGE == "ja":
+            message = message.replace(
+                "unrecognized arguments:", tr("unrecognized_arguments"), 1
+            ).replace("the following arguments are required:", tr("required_arguments"), 1)
+            expected = re.fullmatch(r"argument ([^:]+): expected one argument", message)
+            if expected:
+                message = tr("expected_argument", argument=expected.group(1))
+            elif message.startswith("argument "):
+                message = "引数 " + message[len("argument ") :]
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: {tr('error')}: {message}\n")
+
+
 def build_parser(default_db: Path) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="fandom-isearch - terminal search")
-    parser.add_argument("--version", action="version", version=f"%(prog)s {APP_VERSION}")
+    parser = LocalizedArgumentParser(description=tr("description"), add_help=False)
+    parser._positionals.title = tr("positional_arguments")
+    parser._optionals.title = tr("options")
+    parser.add_argument("-h", "--help", action="help", help=tr("help"))
     parser.add_argument(
-        "query", nargs="*", help="検索語（省略かつTTYならインクリメンタル検索）"
+        "--version", action="version", version=f"%(prog)s {APP_VERSION}", help=tr("version_help")
     )
     parser.add_argument(
-        "--db", type=Path, default=default_db, help=f"SQLite DB (default: {default_db})"
+        "query", nargs="*", help=tr("query_help")
+    )
+    parser.add_argument(
+        "--db", type=Path, default=default_db, help=tr("db_help", path=default_db)
     )
     parser.add_argument(
         "--name-space",
@@ -557,7 +688,7 @@ def build_parser(default_db: Path) -> argparse.ArgumentParser:
         nargs="?",
         const=LIST_SENTINEL,
         metavar="NAME",
-        help="名前空間で絞り込み（複数回可、引数なしで一覧）",
+        help=tr("namespace_help"),
     )
     parser.add_argument(
         "--target",
@@ -567,10 +698,10 @@ def build_parser(default_db: Path) -> argparse.ArgumentParser:
         nargs="?",
         const=LIST_SENTINEL,
         metavar="TARGET",
-        help="検索対象を指定（複数回可、引数なしで一覧）",
+        help=tr("target_help"),
     )
-    parser.add_argument("--limit", type=positive_int, default=500, help="最大件数 (default: 500)")
-    parser.add_argument("--url", action="store_true", help="記事URLを末尾に追加（ワンショット）")
+    parser.add_argument("--limit", type=positive_int, default=500, help=tr("limit_help"))
+    parser.add_argument("--url", action="store_true", help=tr("url_help"))
     return parser
 
 
@@ -624,7 +755,7 @@ def main() -> int:
             )
         return 0
     except (CliError, sqlite3.Error) as error:
-        print(f"fandom-search: error: {error}", file=sys.stderr)
+        print(f"fandom-search: {tr('error')}: {error}", file=sys.stderr)
         return 2
     finally:
         if db is not None:
